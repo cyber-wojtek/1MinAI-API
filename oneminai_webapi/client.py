@@ -725,7 +725,7 @@ class OneMinAIClient:
             The user message.
         stream:
             When ``True``, returns an async iterator of incremental
-            :class:`~1minai.types.ChatOutput` chunks.
+            :class:`~oneminai_webapi.types.ChatOutput` chunks.
         model:
             Model to use.  Defaults to ``gpt-4.1-nano``.
         conversation_id:
@@ -880,7 +880,7 @@ class OneMinAIClient:
         brand_voice_id: str | None = None,
     ) -> ChatSession:
         """
-        Create a :class:`~1minai.session.ChatSession` for multi-turn chat.
+        Create a :class:`~oneminai_webapi.session.ChatSession` for multi-turn chat.
 
         Example::
 
@@ -2079,10 +2079,10 @@ class OneMinAIClient:
         model:
             Defaults to ``tts-1`` (OpenAI).
         voice:
-            Voice name.  Use a :class:`~1minai.constants.TTSVoice` member
+            Voice name.  Use a :class:`~oneminai_webapi.constants.TTSVoice` member
             or a raw string for ElevenLabs / Google voices.
         speed:
-            Playback speed (0.25–4.0).
+            Playback speed (0.25-4.0).
 
         Example::
 

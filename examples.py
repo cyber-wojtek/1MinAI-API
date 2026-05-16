@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 
-import oneminai
+import oneminai_webapi
 from oneminai_webapi import OneMinAIClient
 from oneminai_webapi.constants import (
     ChatModel,
@@ -30,7 +31,7 @@ from oneminai_webapi.constants import (
     VideoModel,
 )
 
-API_KEY = os.environ.get("ONEMINAI_API_KEY", "YOUR_API_KEY_HERE")
+API_KEY = os.environ.get("ONEMINAI_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1dWlkIjoiZWFhZDNhNDUtYWRhOS00OTUzLWFjMzQtZmUzNzFiN2Q4NzFjIiwiaWF0IjoxNzc4ODg3NTQ3LCJleHAiOjE3Nzk0OTIzNDd9.5YTLV0OiXIuVTgSv1o86TlvTRLKLBuGNBbIkJid4nws")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -272,7 +273,7 @@ async def example_speech_to_text() -> None:
         # Upload audio asset first
         asset = await client.upload_asset(
             "recording.mp3",
-            asset_type=oneminai.AssetType.AUDIO,
+            asset_type=oneminai_webapi.AssetType.AUDIO,
         )
         # Transcribe
         result = await client.transcribe(
@@ -426,7 +427,7 @@ async def example_assets() -> None:
         # Upload a local PDF
         doc_asset = await client.upload_asset(
             "report.pdf",
-            asset_type=oneminai.AssetType.DOCUMENT,
+            asset_type=oneminai_webapi.AssetType.DOCUMENT,
         )
         print("PDF asset:", doc_asset.file_id)
 
@@ -530,13 +531,13 @@ async def example_error_handling() -> None:
 
 async def example_logging() -> None:
     """Enable debug-level logging to trace HTTP calls."""
-    oneminai.set_log_level("DEBUG")
+    oneminai_webapi.set_log_level("DEBUG")
 
     async with OneMinAIClient(API_KEY) as client:
         r = await client.generate_content("Say hi.")
         print(r.text)
 
-    oneminai.set_log_level("WARNING")  # quiet again
+    oneminai_webapi.set_log_level("WARNING")  # quiet again
 
 
 # ══════════════════════════════════════════════════════════════════════════════
