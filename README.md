@@ -42,7 +42,7 @@ asyncio.run(main())
 Requires Python **3.10+**.
 
 ```sh
-pip install 1minai
+pip install 1minai-webapi
 ```
 
 ---
@@ -542,8 +542,8 @@ oneminai.set_log_level("DEBUG")   # "DEBUG" | "INFO" | "WARNING" | "ERROR"
 ## Development
 
 ```sh
-git clone https://github.com/your-org/1minai
-cd 1minai
+git clone https://github.com/cyber-wojtek/1MinAI-API
+cd 1MinAI-API
 pip install -e ".[dev]"
 
 # Run examples
