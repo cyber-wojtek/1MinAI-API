@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import uuid
+import uuidconve
 
 import oneminai_webapi
 from oneminai_webapi import OneMinAIClient
@@ -31,7 +31,7 @@ from oneminai_webapi.constants import (
     VideoModel,
 )
 
-API_KEY = os.environ.get("ONEMINAI_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1dWlkIjoiZWFhZDNhNDUtYWRhOS00OTUzLWFjMzQtZmUzNzFiN2Q4NzFjIiwiaWF0IjoxNzc4ODg3NTQ3LCJleHAiOjE3Nzk0OTIzNDd9.5YTLV0OiXIuVTgSv1o86TlvTRLKLBuGNBbIkJid4nws")
+API_KEY = os.environ.get("ONEMINAI_API_KEY", "...your-api-key-here...")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
