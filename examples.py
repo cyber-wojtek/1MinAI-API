@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import uuidconve
 
 import oneminai_webapi
 from oneminai_webapi import OneMinAIClient
