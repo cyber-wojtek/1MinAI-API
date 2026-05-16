@@ -45,7 +45,7 @@ Homepage = "https://github.com/cyber-wojtek/1MinAI-API"
 Issues = "https://github.com/cyber-wojtek/1MinAI-API/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/oneminai"]
+packages = ["oneminai_webapi"]
 
 [tool.hatch.build.targets.sdist]
 include = [
