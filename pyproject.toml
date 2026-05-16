@@ -49,7 +49,7 @@ packages = ["oneminai_webapi"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "src/",
+    "oneminai_webapi/",
     "examples.py",
     "README.md",
     "pyproject.toml",
