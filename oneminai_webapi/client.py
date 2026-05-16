@@ -83,8 +83,8 @@ _NOTIF_UNREAD_URL   = f"{BASE_URL}/notifications/unread"
 _NOTIF_DETAIL_URL   = f"{BASE_URL}/notifications/{{notif_id}}"
 _USER_SETTINGS_URL  = f"{BASE_URL}/users/settings"
 _NOTEBOOK_URL       = f"{BASE_URL}/users/notebook"
-_EXPLORE_URL        = f"{BASE_URL}/posts/explore"
-
+_EXPLORE_URL        = "https://social-api.1min.ai/posts/explore"
+_STUDIOS_URL        = f"{_TEAM_BASE}/studios"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Internal helpers
@@ -187,10 +187,18 @@ class OneMinAIClient:
                 )
             self._session = aiohttp.ClientSession(
                 headers={
-                    "Content-Type":  "application/json",
-                    "Accept":        "application/json, text/plain, */*",
-                    "X-Auth-Token":  "Bearer " + self._api_key,
-                    "X-App-Version": APP_VERSION,
+                    "Content-Type":   "application/json",
+                    "Accept":         "application/json, text/plain, */*",
+                    "X-Auth-Token":   "Bearer " + self._api_key,
+                    "Origin":         "https://app.1min.ai",
+                    "Referer":        "https://app.1min.ai/",
+                    "User-Agent":     (
+                        "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) "
+                        "Gecko/20100101 Firefox/150.0"
+                    ),
+                    "traceparent": f"00-{_uuid.uuid4().hex}-{_uuid.uuid4().hex[:16]}-01",
+                    "Accept-Encoding": "gzip, deflate, zstd",
+                    "Accept-Language": "en-US,en;q=0.9",
                 },
                 connector=aiohttp.TCPConnector(ssl=True),
             )
@@ -302,10 +310,15 @@ class OneMinAIClient:
         ``{"event": str, "data": dict}``.
         """
         session = await self._get_session()
+        # Override Accept for SSE — do NOT pass it as a separate headers= kwarg
+        # because aiohttp merges per-request headers on top of session headers.
         async with session.post(
             url,
             data=json.dumps(payload).encode(),
-            headers={"Accept": "text/event-stream"},
+            headers={
+                "Accept":       "text/event-stream",
+                "Content-Type": "application/json",
+            },
             timeout=aiohttp.ClientTimeout(total=3600),
             proxy=self._proxy,
         ) as resp:
@@ -313,12 +326,8 @@ class OneMinAIClient:
             buf = ""
             async for raw in resp.content:
                 buf += raw.decode("utf-8", errors="replace")
-                while "\
-\
-" in buf:
-                    block, buf = buf.split("\
-\
-", 1)
+                while "\n\n" in buf:
+                    block, buf = buf.split("\n\n", 1)
                     event_type: str | None = None
                     data_str:   str | None = None
                     for line in block.splitlines():
@@ -501,39 +510,16 @@ class OneMinAIClient:
         prompt: str,
         models: list[str],
         *,
+        conversation_id: str | None = None,
         history_message_limit: int = 8,
         is_mixed: bool = False,
         web_search: bool = False,
         images: list[str] | None = None,
         files: list[str] | None = None,
     ) -> CreditEstimate:
-        """
-        Estimate credit cost for a chat prompt across one or more models.
-
-        Parameters
-        ----------
-        prompt:
-            The prompt to estimate cost for.
-        models:
-            List of model ID strings to include in the estimate.
-        history_message_limit:
-            History context window to assume.
-        is_mixed:
-            Whether mixed-model history is enabled.
-        web_search:
-            Whether web search will be used.
-        images:
-            Image attachment list (affects token count).
-        files:
-            File attachment list.
-
-        Returns
-        -------
-        CreditEstimate
-        """
         await self._get_team_id()
         payload = {
-            "prompt":  prompt,
+            "prompt": prompt,
             "settings": {
                 "historySettings": {
                     "historyMessageLimit": history_message_limit,
@@ -547,6 +533,8 @@ class OneMinAIClient:
             },
             "models": models,
         }
+        if conversation_id:
+            payload["conversationId"] = conversation_id
         data  = await self._post(self._team_url(_ESTIMATE_URL), payload)
         total = data.get("total", {})
         return CreditEstimate(
@@ -589,10 +577,8 @@ class OneMinAIClient:
             Each dict contains ``modelId``, ``name``, ``provider``,
             ``features``, ``creditMetadata``, ``modality``, etc.
         """
-        data   = await self._get_json(_MODELS_URL)
+        data   = await self._get_json(_MODELS_URL + (f"?feature={feature}" if feature else ""))
         models = data.get("models", [])  # type: ignore[union-attr]
-        if feature:
-            models = [m for m in models if feature in m.get("features", [])]
         return models
 
     # ══════════════════════════════════════════════════════════════════════
@@ -617,6 +603,7 @@ class OneMinAIClient:
         payload: dict = {
             "type":           "UNIFY_CHAT_WITH_AI",
             "model":          model,
+            "conversationId": conversation_id or "",   # always present
             "promptObject": {
                 "prompt":         prompt,
                 "conversationId": conversation_id or "",
@@ -641,8 +628,6 @@ class OneMinAIClient:
                 "messageGroup": _message_group(),
             },
         }
-        if conversation_id:
-            payload["conversationId"] = conversation_id
         if brand_voice_id:
             payload["brandVoiceId"] = brand_voice_id
         return payload
@@ -699,6 +684,25 @@ class OneMinAIClient:
         brand_voice_id: str | None = ...,
     ) -> AsyncIterator[ChatOutput]: ...
 
+    async def _ensure_conversation(self, conversation_id: str | None, prompt: str) -> str:
+        """
+        Ensure a server-side conversation exists and return its UUID.
+        If conversation_id is None, creates a new one using the prompt as title.
+        """
+        if conversation_id:
+            return conversation_id
+        # Create a new server-side conversation
+        await self._get_team_id()
+        data = await self._post(
+            self._team_url(_CONV_URL),
+            {"type": "UNIFY_CHAT_WITH_AI", "title": prompt[:50]},
+        )
+        conv = data.get("conversation", data)
+        conv_id = conv.get("uuid", "")
+        logger.debug("Created conversation %s", conv_id)
+        return conv_id
+
+
     async def chat(
         self,
         prompt: str,
@@ -716,68 +720,47 @@ class OneMinAIClient:
         with_memories: bool = False,
         brand_voice_id: str | None = None,
     ) -> ChatOutput | AsyncIterator[ChatOutput]:
-        """
-        Send a chat message to a 1min.AI model.
-
-        Parameters
-        ----------
-        prompt:
-            The user message.
-        stream:
-            When ``True``, returns an async iterator of incremental
-            :class:`~oneminai_webapi.types.ChatOutput` chunks.
-        model:
-            Model to use.  Defaults to ``gpt-4.1-nano``.
-        conversation_id:
-            Continue an existing server-side thread.
-        images:
-            Image URLs or asset keys to attach.
-        files:
-            File UUIDs from the Asset API to attach (PDFs, documents, etc.).
-        web_search:
-            Enable live web search grounding.
-        num_of_site:
-            Number of websites to search (when ``web_search=True``).
-        max_word:
-            Maximum word count pulled from web results.
-        is_mixed:
-            Allow mixing context from different models in history.
-        history_message_limit:
-            How many past messages to include as context.
-        with_memories:
-            Enable AI memory across sessions.
-        brand_voice_id:
-            Optional brand voice UUID for a custom output style.
-
-        Returns
-        -------
-        ChatOutput
-            When ``stream=False`` (default).
-        AsyncIterator[ChatOutput]
-            When ``stream=True``.
-
-        Example::
-
-            r = await client.chat("What is the capital of Poland?")
-            print(r.text)
-
-            async for chunk in await client.chat("Write a poem", stream=True):
-                print(chunk.text_delta, end="", flush=True)
-        """
         await self._get_team_id()
         resolved = _resolve(model, DEFAULT_CHAT_MODEL)
-        payload  = self._build_chat_payload(
-            prompt, resolved, conversation_id, images, files,
+
+        # Always use a real server-side conversation UUID
+        conv_id = await self._ensure_conversation(conversation_id, prompt)
+
+        payload = self._build_chat_payload(
+            prompt, resolved, conv_id, images, files,
             web_search, num_of_site, max_word, is_mixed,
             history_message_limit, with_memories, brand_voice_id,
         )
-        url = self._team_url(_CHAT_V2_URL)
+        url = self._team_url(_CHAT_V2_URL) + "?isStreaming=true"
 
         if stream:
             return self._chat_stream(url, payload)
 
-        data = await self._post(url, payload)
-        return self._parse_chat_response(data)
+        return await self._chat_collect(url, payload)
+
+
+    async def _chat_collect(self, url: str, payload: dict) -> ChatOutput:
+        """Collect a full streaming response into a single ChatOutput."""
+        accumulated = ""
+        final: ChatOutput | None = None
+        async for evt in self._post_stream(url, payload):
+            event = evt["event"]
+            data  = evt["data"]
+            if event == "content":
+                accumulated += data.get("content", "")
+            elif event == "result":
+                record = data.get("aiRecord", {})
+                final = ChatOutput(
+                    text            = accumulated,
+                    text_delta      = "",
+                    model           = record.get("model", ""),
+                    conversation_id = record.get("conversationId"),
+                    record_id       = record.get("uuid"),
+                    metadata        = record,
+                )
+        if final is None:
+            final = ChatOutput(text=accumulated, metadata={})
+        return final
 
     async def _chat_stream(
         self, url: str, payload: dict
@@ -817,14 +800,7 @@ class OneMinAIClient:
         web_search: bool = False,
         brand_voice_id: str | None = None,
     ) -> ChatOutput:
-        """
-        Single-turn message; returns the full response.
-
-        Example::
-
-            r = await client.generate_content("Translate 'hello' to Japanese.")
-            print(r.text)
-        """
+        """Single-turn message; returns the full response."""
         return await self.chat(
             prompt,
             stream         = False,
@@ -833,6 +809,7 @@ class OneMinAIClient:
             files          = files,
             web_search     = web_search,
             brand_voice_id = brand_voice_id,
+            # No conversation_id — _ensure_conversation will create one
         )
 
     async def generate_content_stream(
@@ -879,20 +856,10 @@ class OneMinAIClient:
         with_memories: bool = False,
         brand_voice_id: str | None = None,
     ) -> ChatSession:
-        """
-        Create a :class:`~oneminai_webapi.session.ChatSession` for multi-turn chat.
-
-        Example::
-
-            chat = client.start_chat(model="gpt-4.1-nano")
-            r1   = await chat.send_message("My name is Alice.")
-            r2   = await chat.send_message("What's my name?")
-            print(r2.text)
-        """
         return ChatSession(
             client                = self,
             model                 = _resolve(model, DEFAULT_CHAT_MODEL),
-            conversation_id       = conversation_id,
+            conversation_id       = conversation_id,  # None = will be created on first send
             web_search            = web_search,
             num_of_site           = num_of_site,
             max_word              = max_word,
@@ -906,38 +873,24 @@ class OneMinAIClient:
     # CONVERSATIONS
     # ══════════════════════════════════════════════════════════════════════
 
-    async def create_conversation(
-        self,
-        title: str,
-    ) -> ConversationRecord:
-        """
-        Create a server-side conversation for persistent history.
-
-        Pass the returned ``conversation_id`` to :meth:`chat` or
-        :meth:`start_chat` to continue the thread.
-
-        Example::
-
-            conv  = await client.create_conversation("Research session")
-            reply = await client.chat("What is quantum entanglement?",
-                                      conversation_id=conv.conversation_id)
-        """
+    async def create_conversation(self, title: str) -> ConversationRecord:
         await self._get_team_id()
         data = await self._post(
             self._team_url(_CONV_URL),
             {"type": "UNIFY_CHAT_WITH_AI", "title": title},
         )
+        conv = data.get("conversation", data)   # unwrap
         return ConversationRecord(
-            conversation_id = data.get("uuid", ""),
-            title           = data.get("title", title),
-            metadata        = data,
+            conversation_id = conv.get("uuid", ""),
+            title           = conv.get("title", title),
+            metadata        = conv,
         )
 
-    async def list_conversations(self) -> list[ConversationRecord]:
-        """Return all server-side conversations for the current team."""
+    async def list_conversations(self, type: str = "UNIFY_CHAT_WITH_AI") -> list[ConversationRecord]:
         await self._get_team_id()
-        data  = await self._get_json(self._team_url(_CONV_URL))
-        items = data.get("conversationList", [])  # type: ignore[union-attr]
+        url  = self._team_url(_CONV_URL) + f"?type={type}"
+        data  = await self._get_json(url)
+        items = data.get("conversationList", [])
         return [
             ConversationRecord(
                 conversation_id = c.get("uuid", ""),
@@ -964,28 +917,12 @@ class OneMinAIClient:
         conversation_id: str,
         after_id: str | None = None,
     ) -> list[MessageRecord]:
-        """
-        Return the message history of a conversation.
-
-        Parameters
-        ----------
-        conversation_id:
-            UUID of the conversation.
-        after_id:
-            Pagination cursor — return only messages after this record UUID.
-
-        Returns
-        -------
-        list[MessageRecord]
-        """
         await self._get_team_id()
-        params: dict = {"conversationId": conversation_id}
-        if after_id:
-            params["afterId"] = after_id
-        data  = await self._get_json(
-            self._team_url(_MSG_URL), params=params
-        )
-        items = data.get("messageList", [])  # type: ignore[union-attr]
+        import urllib.parse
+        filters = json.dumps({"conversationId": conversation_id, "afterId": after_id})
+        url = self._team_url(_MSG_URL) + "?filters=" + urllib.parse.quote(filters)
+        data  = await self._get_json(url)
+        items = data.get("messageList", [])
         return [
             MessageRecord(
                 role           = m.get("role", ""),
@@ -2548,3 +2485,10 @@ class OneMinAIClient:
         """
         data = await self._get_json(_EXPLORE_URL)
         return data.get("data", data)  # type: ignore[union-attr]
+    
+    async def list_studios(self) -> list[dict]:
+        """Return all studios for the current team."""
+        await self._get_team_id()
+        data = await self._get_json(self._team_url(_STUDIOS_URL))
+        return data.get("studioList", [])
+

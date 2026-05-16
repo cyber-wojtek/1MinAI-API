@@ -115,7 +115,7 @@ class ChatSession:
             stream                = False,
         )
         # Keep the conversation_id in sync if the server assigned one.
-        if output.conversation_id and not self._conversation_id:
+        if output.conversation_id:
             self._conversation_id = output.conversation_id
         self._last_output = output
         return output
@@ -155,7 +155,7 @@ class ChatSession:
             brand_voice_id        = self._brand_voice_id,
             stream                = True,
         ):
-            if chunk.conversation_id and not self._conversation_id:
+            if chunk.conversation_id:
                 self._conversation_id = chunk.conversation_id
             self._last_output = chunk
             yield chunk

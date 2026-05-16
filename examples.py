@@ -30,19 +30,18 @@ from oneminai_webapi.constants import (
     VideoModel,
 )
 
-API_KEY = os.environ.get("ONEMINAI_API_KEY", "...your-api-key-here...")
+API_KEY = os.environ.get("ONEMINAI_API_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1dWlkIjoiZWE3MWIxYTQtNTA3Ny00ZTFlLWJjYTEtOGUyZjZlMmM5MmIzIiwiaWF0IjoxNzc4OTQzNjc0LCJleHAiOjE3Nzk1NDg0NzR9.1KGPHIf4OZvE5GpC4m4elz6M9Myq39pKE_QSEMNj5CI")
 
+API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1dWlkIjoiMGQ1NzViOTctN2E1NC00YWFhLTlhMTItZGU1YWM0NmNhZTdlIiwiaWF0IjoxNzc4OTMyNzIzLCJleHAiOjE3Nzk1Mzc1MjN9.-ExfDhyUcTOhCXHFW3IpBw9YIgMwGVfQgqFE_w7qkUI"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1.  BASIC GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def example_basic_generation() -> None:
-    """Single-turn text generation — the simplest possible call."""
     async with OneMinAIClient(API_KEY) as client:
         response = await client.generate_content("What is the capital of Poland?")
         print("Response:", response.text)
-        print("Model used:", response.model)
         # str(response) is equivalent to response.text
         assert str(response) == response.text
 

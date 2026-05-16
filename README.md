@@ -556,4 +556,3 @@ python examples.py
 ## References
 
 - [1min.AI](https://1min.ai)
-- [1min.AI API docs](https://docs.1min.ai/docs/api/intro)
