@@ -1,4 +1,4 @@
-# 1minai
+# 1MinAI-API
 
 An **async Python client** for the [1min.AI](https://1min.ai) API.
 
