@@ -530,12 +530,69 @@ oneminai.set_log_level("DEBUG")   # "DEBUG" | "INFO" | "WARNING" | "ERROR"
 
 | Method / Property | Description |
 |---|---|
-| `send_message(prompt, ...)` | Send a message and await the full reply |
-| `send_message_stream(prompt, ...)` | Send and stream the reply |
+| `send_message(prompt, ...)` | Send a message, await full reply |
+| `send_message_stream(prompt, ...)` | Send a message, stream reply token by token |
+| `get_history()` | Fetch full message history from the server |
 | `delete()` | Delete the server-side conversation |
-| `.conversation_id` | Server UUID of this thread |
+| `.conversation_id` | Server UUID of this thread (`None` until first message) |
 | `.model` | Model used by this session |
-| `.last_output` | Most recent `ChatOutput` |
+| `.last_output` | Most recent `ChatOutput` from this session |
+| `.turn_count` | Number of messages sent so far |
+
+The session creates a server-side conversation automatically on the first
+`send_message` call. The `conversation_id` is `None` until that point.
+
+```python
+chat = client.start_chat(model="gpt-4.1-nano")
+print(chat.conversation_id)   # None
+
+r1 = await chat.send_message("My name is Alice.")
+print(chat.conversation_id)   # "eedc864d-…"  ← assigned by server
+print(chat.turn_count)        # 1
+
+r2 = await chat.send_message("What's my name?")
+print(r2.text)                # "Your name is Alice."
+print(chat.turn_count)        # 2
+
+# Stream a turn
+async for chunk in chat.send_message_stream("Write a haiku."):
+    print(chunk.text_delta, end="", flush=True)
+print()
+print(chat.turn_count)        # 3
+
+# Fetch server-side history
+messages = await chat.get_history()
+for msg in messages:
+    print(f"[{msg.role}]: {msg.content}")
+
+# Inspect
+print(repr(chat))
+# ChatSession(model='gpt-4.1-nano', conversation_id='eedc864d-…', turns=3)
+
+# Clean up
+await chat.delete()
+print(chat.conversation_id)   # None
+print(chat.turn_count)        # 0
+```
+
+---
+
+### Return types
+
+| Type | Key fields |
+|---|---|
+| `ChatOutput` | `text`, `text_delta`, `model`, `conversation_id`, `record_id` |
+| `ImageOutput` | `images: list[GeneratedImage]`, `image` (first), `model`, `record_id` |
+| `GeneratedImage` | `url`, `model`; `.save(dir)` downloads to disk |
+| `AudioOutput` | `audio_url`, `model`, `record_id`; `.save(dir)` |
+| `MusicOutput` | `audio_url`, `model`, `record_id`; `.save(dir)` |
+| `VideoOutput` | `video_url`, `model`, `record_id`; `.save(dir)` |
+| `TranscriptionOutput` | `text`, `model`, `record_id` |
+| `AssetRecord` | `asset_key`, `file_id`, `asset_type` |
+| `UserRecord` | `user_id`, `email`, `team_id`, `team_name`, `credit`, `plan` |
+| `ConversationRecord` | `conversation_id`, `title` |
+| `MessageRecord` | `role`, `content`, `record_id`, `credit`, `execution_time` |
+| `CreditEstimate` | `models`, `total_input_tokens`, `total_estimated_credit` |
 
 ---
 
