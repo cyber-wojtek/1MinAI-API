@@ -2,8 +2,7 @@
 
 An unofficial **async Python client** for the [1min.AI](https://1min.ai) web interface.
 
-> **Disclaimer:** This library reverse-engineers the 1min.AI browser API. It is not affiliated with or endorsed by 1min.AI. Use responsibly and in accordance with their [terms of service](https://1min.ai/terms).
-
+> **Disclaimer:** This library reverse-engineers the 1min.AI browser API. It is not affiliated with or endorsed by 1min.AI. Use responsibly.
 ---
 
 ## Features
