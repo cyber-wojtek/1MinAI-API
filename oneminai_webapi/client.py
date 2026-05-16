@@ -178,9 +178,9 @@ class OneMinAIClient:
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
-    async def _get_session(self) -> aiohttp.ClientSession:
+    async def _get_session(self, need_api_key: bool = True) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            if not self._api_key:
+            if not self._api_key and need_api_key:
                 raise AuthenticationError(
                     "No API key set.  Call oauth_login() first or pass "
                     "api_key= to OneMinAIClient()."
@@ -276,8 +276,8 @@ class OneMinAIClient:
             await self._raise_for_status(resp)
             return await resp.json(content_type=None)
 
-    async def _get_json(self, url: str, **kwargs: object) -> dict | list:
-        session = await self._get_session()
+    async def _get_json(self, url: str, need_api_key: bool, **kwargs: object) -> dict | list:
+        session = await self._get_session(need_api_key=need_api_key)
         async with session.get(
             url, timeout=self._timeout, proxy=self._proxy, **kwargs
         ) as resp:
@@ -469,7 +469,7 @@ class OneMinAIClient:
         -------
         UserRecord
         """
-        data     = await self._get_json(_USERS_URL)
+        data     = await self._get_json(_USERS_URL, need_api_key=True)
         user_obj = data.get("user", data)  # type: ignore[union-attr]
         user     = self._parse_user(user_obj)
         self._user    = user
@@ -502,7 +502,7 @@ class OneMinAIClient:
         int
         """
         await self._get_team_id()
-        data = await self._get_json(self._team_url(_CREDITS_URL))
+        data = await self._get_json(self._team_url(_CREDITS_URL), need_api_key=True)
         return data.get("credit", 0)  # type: ignore[union-attr]
 
     async def estimate_chat_cost(
@@ -546,12 +546,12 @@ class OneMinAIClient:
     async def list_team_members(self) -> list[dict]:
         """Return all members of the primary team."""
         await self._get_team_id()
-        data = await self._get_json(self._team_url(_MEMBERS_URL))
+        data = await self._get_json(self._team_url(_MEMBERS_URL), need_api_key=True)
         return data.get("members", [])  # type: ignore[union-attr]
 
     async def get_notebook(self) -> str | None:
         """Return the user's notebook content, or ``None`` if empty."""
-        data = await self._get_json(_NOTEBOOK_URL)
+        data = await self._get_json(_NOTEBOOK_URL, need_api_key=True)
         return data.get("notebook")  # type: ignore[union-attr]
 
     # ══════════════════════════════════════════════════════════════════════
@@ -577,7 +577,7 @@ class OneMinAIClient:
             Each dict contains ``modelId``, ``name``, ``provider``,
             ``features``, ``creditMetadata``, ``modality``, etc.
         """
-        data   = await self._get_json(_MODELS_URL + (f"?feature={feature}" if feature else ""))
+        data   = await self._get_json(_MODELS_URL + (f"?feature={feature}" if feature else ""), need_api_key=False)
         models = data.get("models", [])  # type: ignore[union-attr]
         return models
 
@@ -889,7 +889,7 @@ class OneMinAIClient:
     async def list_conversations(self, type: str = "UNIFY_CHAT_WITH_AI") -> list[ConversationRecord]:
         await self._get_team_id()
         url  = self._team_url(_CONV_URL) + f"?type={type}"
-        data  = await self._get_json(url)
+        data  = await self._get_json(url, need_api_key=True)
         items = data.get("conversationList", [])
         return [
             ConversationRecord(
@@ -904,7 +904,7 @@ class OneMinAIClient:
         """Fetch a single conversation by its UUID."""
         await self._get_team_id()
         url  = self._team_url(_CONV_DETAIL_URL, conv_id=conversation_id)
-        data = await self._get_json(url)
+        data = await self._get_json(url, need_api_key=True)
         c    = data.get("conversation", data)  # type: ignore[union-attr]
         return ConversationRecord(
             conversation_id = c.get("uuid", conversation_id),
@@ -921,7 +921,7 @@ class OneMinAIClient:
         import urllib.parse
         filters = json.dumps({"conversationId": conversation_id, "afterId": after_id})
         url = self._team_url(_MSG_URL) + "?filters=" + urllib.parse.quote(filters)
-        data  = await self._get_json(url)
+        data  = await self._get_json(url, need_api_key=True)
         items = data.get("messageList", [])
         return [
             MessageRecord(
