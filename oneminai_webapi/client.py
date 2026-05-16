@@ -187,10 +187,9 @@ class OneMinAIClient:
                 )
             self._session = aiohttp.ClientSession(
                 headers={
-                    "API-KEY":       self._api_key,
                     "Content-Type":  "application/json",
                     "Accept":        "application/json, text/plain, */*",
-                    "X-Auth-Token":  "Bearer",
+                    "X-Auth-Token":  "Bearer " + self._api_key,
                     "X-App-Version": APP_VERSION,
                 },
                 connector=aiohttp.TCPConnector(ssl=True),
