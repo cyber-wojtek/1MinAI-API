@@ -18,8 +18,8 @@ import asyncio
 import os
 
 import oneminai
-from oneminai import OneMinAIClient
-from oneminai.constants import (
+from oneminai_webapi import OneMinAIClient
+from oneminai_webapi.constants import (
     ChatModel,
     CodeModel,
     ImageModel,
