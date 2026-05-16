@@ -12,6 +12,7 @@ requires-python = ">=3.10"
 keywords = [
     "1min.ai", "llm", "ai", "async", "openai", "claude", "gemini",
     "image-generation", "text-to-speech", "speech-to-text", "video-generation",
+    "reverse-engineered", "wrapper", "client", "unofficial"
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
