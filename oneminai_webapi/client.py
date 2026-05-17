@@ -167,10 +167,12 @@ class OneMinAIClient:
         proxy: str | None = None,
         timeout: int = 60,
     ) -> None:
-        self._api_key  = api_key
-        self._proxy    = proxy
-        self._timeout  = aiohttp.ClientTimeout(total=timeout)
+        self._api_key    = api_key
+        self._proxy      = proxy
+        self._timeout    = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
+        # Stable per-client device/identity token (observed as MP-Identity header)
+        self._mp_identity: str = str(_uuid.uuid4())
 
         # Resolved lazily on the first request that needs it.
         self._team_id: str | None = None
@@ -224,10 +226,18 @@ class OneMinAIClient:
 
         The team ID is required for all team-scoped endpoints.  It is derived
         from ``GET /users`` → ``user.teams[0].team.uuid``.
+
+        Also caches the user UUID as the stable ``MP-Identity`` device token,
+        matching the behaviour observed in the 1min.AI web client (HAR trace).
         """
         if self._team_id:
             return self._team_id
         user = await self.get_current_user()
+        # Use the authenticated user's UUID as the stable device identity
+        if user.user_id and self._mp_identity != user.user_id:
+            self._mp_identity = user.user_id
+            session = await self._get_session(need_api_key=False)
+            session.headers.update({"MP-Identity": self._mp_identity})
         return user.team_id
 
     def _team_url(self, template: str, **extra: str) -> str:
@@ -326,17 +336,21 @@ class OneMinAIClient:
             buf = ""
             async for raw in resp.content:
                 buf += raw.decode("utf-8", errors="replace")
+                # Normalise Windows-style line endings before splitting
+                buf = buf.replace("\r\n", "\n").replace("\r", "\n")
                 while "\n\n" in buf:
                     block, buf = buf.split("\n\n", 1)
                     event_type: str | None = None
                     data_str:   str | None = None
                     for line in block.splitlines():
                         line = line.strip()
+                        if not line or line.startswith(":"):
+                            continue   # SSE comment or keep-alive
                         if line.startswith("event:"):
                             event_type = line[6:].strip()
                         elif line.startswith("data:"):
                             data_str = line[5:].strip()
-                    if event_type and data_str:
+                    if event_type and data_str and data_str != "[DONE]":
                         try:
                             yield {"event": event_type, "data": json.loads(data_str)}
                         except json.JSONDecodeError:
@@ -428,9 +442,16 @@ class OneMinAIClient:
 
         self._api_key = token
         if self._session and not self._session.closed:
-            self._session.headers.update({"API-KEY": token})
+            self._session.headers.update({
+                "X-Auth-Token":  "Bearer " + token,
+                "X-App-Version": APP_VERSION,
+                "MP-Identity":   user_obj.get("uuid", self._mp_identity),
+            })
         else:
             await self.close()
+        # Use the server-assigned user UUID as our stable device identity
+        if server_uuid := user_obj.get("uuid"):
+            self._mp_identity = server_uuid
 
         user = self._parse_user(user_obj)
         self._user    = user
@@ -687,19 +708,24 @@ class OneMinAIClient:
     async def _ensure_conversation(self, conversation_id: str | None, prompt: str) -> str:
         """
         Ensure a server-side conversation exists and return its UUID.
-        If conversation_id is None, creates a new one using the prompt as title.
+
+        If *conversation_id* is already set the call is a no-op.
+        Otherwise a new server-side thread is created with the first
+        50 characters of *prompt* as its title.
+
+        The title can be updated later via :meth:`rename_conversation`.
         """
         if conversation_id:
             return conversation_id
-        # Create a new server-side conversation
         await self._get_team_id()
-        data = await self._post(
+        title = prompt.strip()[:50] or "New conversation"
+        data  = await self._post(
             self._team_url(_CONV_URL),
-            {"type": "UNIFY_CHAT_WITH_AI", "title": prompt[:50]},
+            {"type": "UNIFY_CHAT_WITH_AI", "title": title},
         )
-        conv = data.get("conversation", data)
+        conv    = data.get("conversation", data)
         conv_id = conv.get("uuid", "")
-        logger.debug("Created conversation %s", conv_id)
+        logger.debug("Created conversation %s (title=%r)", conv_id[:8], title)
         return conv_id
 
 
@@ -886,11 +912,45 @@ class OneMinAIClient:
             metadata        = conv,
         )
 
-    async def list_conversations(self, type: str = "UNIFY_CHAT_WITH_AI") -> list[ConversationRecord]:
+    async def list_conversations(
+        self,
+        type: str = "UNIFY_CHAT_WITH_AI",
+        *,
+        search: str | None = None,
+        tag_id: str | None = None,
+        page: int = 1,
+        limit: int = 50,
+    ) -> list[ConversationRecord]:
+        """
+        List server-side conversation threads.
+
+        Parameters
+        ----------
+        type:
+            Feature type filter, e.g. ``"UNIFY_CHAT_WITH_AI"``.
+        search:
+            Optional title search query.
+        tag_id:
+            Filter by a specific tag UUID.
+        page:
+            Page number (1-based).
+        limit:
+            Results per page (max 100).
+
+        Returns
+        -------
+        list[ConversationRecord]
+        """
         await self._get_team_id()
-        url  = self._team_url(_CONV_URL) + f"?type={type}"
+        params = f"?type={type}&page={page}&limit={limit}"
+        if search:
+            import urllib.parse as _up
+            params += "&search=" + _up.quote(search)
+        if tag_id:
+            params += "&tagId=" + tag_id
+        url   = self._team_url(_CONV_URL) + params
         data  = await self._get_json(url, need_api_key=True)
-        items = data.get("conversationList", [])
+        items = data.get("conversationList", [])  # type: ignore[union-attr]
         return [
             ConversationRecord(
                 conversation_id = c.get("uuid", ""),
@@ -934,6 +994,43 @@ class OneMinAIClient:
             )
             for m in items
         ]
+
+    async def rename_conversation(
+        self,
+        conversation_id: str,
+        title: str,
+        tag_ids: list[str] | None = None,
+    ) -> ConversationRecord:
+        """
+        Rename a server-side conversation.
+
+        This calls ``PUT /teams/{team_id}/features/conversations/{conv_id}``
+        with ``{"title": title, "tagIds": tag_ids}`` — exactly as observed
+        in the 1min.AI browser client.
+
+        Parameters
+        ----------
+        conversation_id:
+            UUID of the conversation to rename.
+        title:
+            New display title.
+        tag_ids:
+            Optional list of tag UUIDs to associate.  Defaults to ``[]``.
+
+        Returns
+        -------
+        ConversationRecord
+        """
+        await self._get_team_id()
+        url  = self._team_url(_CONV_DETAIL_URL, conv_id=conversation_id)
+        body = {"title": title, "tagIds": tag_ids if tag_ids is not None else []}
+        data = await self._put(url, body)
+        c    = data.get("conversation", data)
+        return ConversationRecord(
+            conversation_id = c.get("uuid", conversation_id),
+            title           = c.get("title", title),
+            metadata        = c,
+        )
 
     async def delete_conversation(self, conversation_id: str) -> None:
         """Delete *conversation_id* from the server."""

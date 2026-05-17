@@ -586,6 +586,7 @@ except APIError as e:
 | `list_conversations()` | List all threads |
 | `get_conversation(conv_id)` | Fetch thread metadata |
 | `get_conversation_messages(conv_id)` | Fetch message history |
+| `rename_conversation(conv_id, title, tag_ids)` | Rename a thread |
 | `delete_conversation(conv_id)` | Delete a thread |
 
 #### Images

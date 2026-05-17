@@ -41,9 +41,14 @@ from .types import (
     AudioOutput,
     ChatOutput,
     ConversationRecord,
+    CreditEstimate,
     GeneratedImage,
     ImageOutput,
+    MessageRecord,
+    MusicOutput,
+    NotificationRecord,
     TranscriptionOutput,
+    UserRecord,
     VideoOutput,
 )
 
@@ -94,13 +99,18 @@ __all__ = [
     "AssetType",
     # Output types
     "ChatOutput",
+    "CreditEstimate",
     "ImageOutput",
     "AudioOutput",
+    "MusicOutput",
     "TranscriptionOutput",
     "VideoOutput",
     "AssetRecord",
     "ConversationRecord",
     "GeneratedImage",
+    "MessageRecord",
+    "NotificationRecord",
+    "UserRecord",
     # Exceptions
     "OneMinAIError",
     "APIError",

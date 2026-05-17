@@ -147,14 +147,25 @@ async def example_conversations() -> None:
         )
         print("Reply:", r.text[:200])
 
-        # List all conversations
+        # List all conversations (with optional search)
         all_convs = await client.list_conversations()
         print(f"Total conversations: {len(all_convs)}")
+
+        # Search by title
+        found = await client.list_conversations(search="research")
+        print(f"Found {len(found)} matching conversation(s)")
 
         # Fetch history
         messages = await client.get_conversation_messages(conv.conversation_id)
         for msg in messages:
             print(f"  [{msg.role}]: {msg.content[:80]}")
+
+        # Rename the conversation
+        renamed = await client.rename_conversation(
+            conv.conversation_id,
+            "My research session — renamed",
+        )
+        print(f"Renamed to: {renamed.title!r}")
 
         # Tidy up
         await client.delete_conversation(conv.conversation_id)
