@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "1minai_webapi"
-version = "1.0.3"
+version = "1.0.31"
 description = "Async Python wrapper for the 1min.ai web app"
 readme = "README.md"
 license = { text = "MIT" }
