@@ -76,7 +76,7 @@ client = OneMinAIClient(os.environ["ONEMINAI_API_KEY"])
 
 ### OAuth (Google access token)
 
-If you already have a Google OAuth2 access token (`ya29.…`) — for example obtained via a browser extension — pass it directly:
+If you already have a Google OAuth2 access token (`ya29.…`) - pass it directly to `oauth_login()`:
 
 ```python
 client = OneMinAIClient()
