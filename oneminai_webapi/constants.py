@@ -19,6 +19,48 @@ BASE_URL: str = "https://api.1min.ai"
 # X-App-Version observed in the HAR capture.
 APP_VERSION: str = "1.1.45"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Cloudflare
+# ──────────────────────────────────────────────────────────────────────────────
+
+# HTTP status codes that Cloudflare typically uses for challenges/blocks.
+CF_CHALLENGE_STATUS_CODES: frozenset[int] = frozenset({403, 429, 503})
+
+# Substrings in the response body that signal a Cloudflare HTML challenge
+# page rather than a real API JSON error.
+CF_BODY_SIGNATURES: tuple[str, ...] = (
+    "cf-browser-verification",
+    "cf_clearance",
+    "challenge-platform",
+    "cf-turnstile",
+    "jschl_vc",
+    "jschl_answer",
+    "Cloudflare Ray ID",
+    "cloudflare",
+    "Please Wait... | Cloudflare",
+    "Attention Required! | Cloudflare",
+    "cf-spinner",
+    "cf-challenge",
+    "__cf_chl",
+    "cf-please-wait",
+)
+
+# Map of body markers → challenge_type label.  First match wins.
+CF_CHALLENGE_TITLE_MAP: tuple[tuple[str, str], ...] = (
+    ("turnstile",          "turnstile"),
+    ("managed_challenge",  "managed_challenge"),
+    ("js_challenge",       "js_challenge"),
+    ("I'm Under Attack",   "js_challenge"),
+    ("Just a moment",      "js_challenge"),
+    ("Please Wait",        "managed_challenge"),
+    ("Attention Required", "block"),
+    ("Access denied",      "block"),
+    ("1020",               "block"),
+    ("1006",               "block"),
+    ("Too many requests",  "rate_limit"),
+)
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Chat / unified-chat models  (feature: UNIFY_CHAT_WITH_AI)

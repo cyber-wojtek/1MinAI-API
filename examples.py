@@ -195,8 +195,7 @@ async def example_image_generation() -> None:
         result2 = await client.generate_image(
             "Abstract geometric art, vibrant colors",
             model=ImageModel.FLUX_2_PRO,
-            num_images=4,
-            aspect_ratio="16:9",
+            num_images=4
         )
         for i, img in enumerate(result2.images):
             print(f"  Image {i+1}: {img.url}")
@@ -545,6 +544,89 @@ async def example_logging() -> None:
         print(r.text)
 
     oneminai_webapi.set_log_level("WARNING")  # quiet again
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 20.  CLOUDFLARE BYPASS
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def example_cloudflare() -> None:
+    """
+    Handle Cloudflare challenges gracefully.
+
+    If 1min.AI is protected by Cloudflare you will receive a
+    ``CloudflareError`` on the first request.  The fix is to:
+
+    1. Open https://app.1min.ai in a real browser (or Playwright /
+       undetected-chromedriver).
+    2. Solve the Cloudflare challenge that appears.
+    3. Copy the ``cf_clearance`` cookie value from
+       DevTools → Application → Cookies → app.1min.ai
+    4. Copy the exact ``User-Agent`` string from the same browser session
+       (DevTools → Network → any request → Request Headers → user-agent).
+    5. Pass both to ``OneMinAIClient``.
+
+    .. important::
+       ``cf_clearance`` is **bound to the User-Agent** that solved it.
+       Mismatching UAs causes immediate rejection by Cloudflare.
+    """
+    from oneminai_webapi.exceptions import CloudflareError
+
+    CF_CLEARANCE = os.environ.get("CF_CLEARANCE", "")
+    CF_UA        = os.environ.get(
+        "CF_USER_AGENT",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/137.0.0.0 Safari/537.36",
+    )
+
+    # ── Scenario A: provide credentials up-front ──────────────────────────
+    if CF_CLEARANCE:
+        async with OneMinAIClient(
+            API_KEY,
+            cf_clearance = CF_CLEARANCE,
+            user_agent   = CF_UA,
+        ) as client:
+            r = await client.generate_content("Hello from behind Cloudflare!")
+            print("Response:", r.text)
+
+        return
+
+    # ── Scenario B: detect and recover at runtime ─────────────────────────
+    async with OneMinAIClient(API_KEY) as client:
+        try:
+            r = await client.generate_content("Hello!")
+            print("No CF challenge — response:", r.text)
+
+        except CloudflareError as e:
+            print(f"Cloudflare challenge detected!")
+            print(f"  challenge_type : {e.challenge_type}")
+            print(f"  ray_id         : {e.ray_id}")
+            print(f"  status_code    : {e.status_code}")
+            print()
+            print("Action required:")
+            print("  1. Open https://app.1min.ai in a browser")
+            print("  2. Solve the Cloudflare challenge")
+            print("  3. Export CF_CLEARANCE and CF_USER_AGENT, then re-run")
+            print()
+            print("Or hot-swap at runtime:")
+            print("  client.update_cf_clearance(new_clearance, user_agent=new_ua)")
+
+    # ── Scenario C: hot-swap after a challenge fires mid-session ──────────
+    async with OneMinAIClient(API_KEY) as client:
+        for attempt in range(2):
+            try:
+                r = await client.generate_content("Hello again!")
+                print("Success on attempt", attempt + 1, ":", r.text[:80])
+                break
+            except CloudflareError as e:
+                if attempt == 0 and CF_CLEARANCE:
+                    print(f"CF challenge on attempt {attempt+1} — hot-swapping…")
+                    client.update_cf_clearance(CF_CLEARANCE, user_agent=CF_UA)
+                else:
+                    print(f"CF challenge on attempt {attempt+1} — giving up: {e}")
+                    raise
 
 
 # ══════════════════════════════════════════════════════════════════════════════

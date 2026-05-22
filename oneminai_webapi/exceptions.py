@@ -55,3 +55,55 @@ class OAuthError(OneMinAIError):
     Covers POST /auth/oauth non-2xx responses and responses that are missing
     ``user.token``.
     """
+
+
+class CloudflareError(OneMinAIError):
+    """
+    Raised when a Cloudflare challenge or block is encountered.
+
+    Attributes
+    ----------
+    status_code:
+        HTTP status code returned (typically 403, 429, or 503).
+    challenge_type:
+        The type of Cloudflare challenge detected, e.g.
+        ``"js_challenge"``, ``"managed_challenge"``, ``"turnstile"``,
+        ``"block"``, ``"rate_limit"``, or ``"unknown"``.
+    ray_id:
+        The ``CF-RAY`` header value, useful for reporting to Cloudflare.
+        ``None`` if the header was absent.
+
+    Resolution
+    ----------
+    Pass a fresh ``cf_clearance`` cookie (and matching ``user_agent``) to
+    :class:`~oneminai_webapi.OneMinAIClient`::
+
+        client = OneMinAIClient(
+            api_key="…",
+            cf_clearance="abc123xyz…",
+            user_agent="Mozilla/5.0 …",
+        )
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        challenge_type: str = "unknown",
+        ray_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code    = status_code
+        self.challenge_type = challenge_type
+        self.ray_id         = ray_id
+
+    def __str__(self) -> str:
+        parts = [super().__str__()]
+        if self.challenge_type != "unknown":
+            parts.append(f"challenge_type={self.challenge_type!r}")
+        if self.ray_id:
+            parts.append(f"ray_id={self.ray_id!r}")
+        if self.status_code:
+            parts.append(f"status_code={self.status_code}")
+        return "  ".join(parts)
+

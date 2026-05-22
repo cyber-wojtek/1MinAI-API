@@ -29,6 +29,7 @@ from .exceptions import (
     APIError,
     AssetUploadError,
     AuthenticationError,
+    CloudflareError,
     ConversationError,
     OneMinAIError,
     RateLimitError,
@@ -118,6 +119,7 @@ __all__ = [
     "RateLimitError",
     "AssetUploadError",
     "ConversationError",
+    "CloudflareError",
     "ValidationError",
     "TimeoutError",
     # Logging

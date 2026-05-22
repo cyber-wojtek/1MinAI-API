@@ -18,6 +18,9 @@ import aiohttp
 from .constants import (
     APP_VERSION,
     BASE_URL,
+    CF_BODY_SIGNATURES,
+    CF_CHALLENGE_STATUS_CODES,
+    CF_CHALLENGE_TITLE_MAP,
     DEFAULT_CHAT_MODEL,
     DEFAULT_CODE_MODEL,
     DEFAULT_IMAGE_MODEL,
@@ -39,6 +42,7 @@ from .exceptions import (
     APIError,
     AssetUploadError,
     AuthenticationError,
+    CloudflareError,
     OAuthError,
     RateLimitError,
     ValidationError,
@@ -128,6 +132,46 @@ def _text_from_record(record: dict) -> str:
     return results[0] if isinstance(results, list) and results else ""
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Cloudflare detection helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _is_cloudflare_response(
+    status: int,
+    headers: "aiohttp.CIMultiDictProxy[str]",
+    body: str,
+) -> bool:
+    """Return True when the response looks like a Cloudflare challenge/block."""
+    if headers.get("CF-RAY"):
+        return True
+    if "cloudflare" in headers.get("Server", "").lower():
+        return True
+    if status in CF_CHALLENGE_STATUS_CODES:
+        body_lower = body.lower()
+        return any(sig.lower() in body_lower for sig in CF_BODY_SIGNATURES)
+    return False
+
+
+def _classify_cf_challenge(body: str) -> str:
+    """Return a human-readable challenge_type label from the CF HTML body."""
+    body_lower = body.lower()
+    for marker, label in CF_CHALLENGE_TITLE_MAP:
+        if marker.lower() in body_lower:
+            return label
+    return "unknown"
+
+
+async def _read_body_safe(
+    resp: aiohttp.ClientResponse, max_bytes: int = 8192
+) -> str:
+    """Read up to *max_bytes* of the response body; return "" on error."""
+    try:
+        raw = await resp.content.read(max_bytes)
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
 # ──────────────────────────────────────────────────────────────────────────────
 # OneMinAIClient
 # ──────────────────────────────────────────────────────────────────────────────
@@ -167,15 +211,102 @@ class OneMinAIClient:
         api_key: str = "",
         proxy: str | None = None,
         timeout: int = 60,
+        cf_clearance: str | None = None,
+        user_agent: str | None = None,
+        extra_cookies: dict[str, str] | None = None,
     ) -> None:
-        self._api_key  = api_key
-        self._proxy    = proxy
-        self._timeout  = aiohttp.ClientTimeout(total=timeout)
+        self._api_key      = api_key
+        self._proxy        = proxy
+        self._timeout      = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
+
+        # Cloudflare / cookie config
+        self._cf_clearance  : str | None       = cf_clearance
+        self._user_agent    : str              = (
+            user_agent
+            or "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
+        )
+        self._extra_cookies : dict[str, str]   = extra_cookies or {}
 
         # Resolved lazily on the first request that needs it.
         self._team_id: str | None = None
         self._user: UserRecord | None = None
+
+
+    # ── Cloudflare helpers ─────────────────────────────────────────────────
+
+    def _build_cookie_header(self) -> str | None:
+        """Assemble a Cookie header string from all configured cookies."""
+        cookies: dict[str, str] = {}
+        cookies.update(self._extra_cookies)
+        if self._cf_clearance:
+            cookies["cf_clearance"] = self._cf_clearance
+        if not cookies:
+            return None
+        return "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+    def update_cf_clearance(
+        self,
+        cf_clearance: str,
+        user_agent: str | None = None,
+        extra_cookies: dict[str, str] | None = None,
+    ) -> None:
+        """
+        Hot-swap the cf_clearance cookie without recreating the client.
+
+        Parameters
+        ----------
+        cf_clearance:
+            New cf_clearance cookie value.
+        user_agent:
+            Updated User-Agent string.  Existing value kept if omitted.
+        extra_cookies:
+            If provided, replaces the entire extra-cookies dict.
+        """
+        self._cf_clearance = cf_clearance
+        if user_agent is not None:
+            self._user_agent = user_agent
+        if extra_cookies is not None:
+            self._extra_cookies = extra_cookies
+        if self._session and not self._session.closed:
+            cookie_hdr = self._build_cookie_header()
+            if cookie_hdr:
+                self._session.headers.update({"Cookie": cookie_hdr})
+            else:
+                self._session.headers.pop("Cookie", None)
+            self._session.headers.update({"User-Agent": self._user_agent})
+        logger.info(
+            "cf_clearance updated (prefix=%s…)",
+            cf_clearance[:12] if len(cf_clearance) > 12 else cf_clearance,
+        )
+
+    @property
+    def cf_clearance(self) -> str | None:
+        """Currently configured cf_clearance cookie value."""
+        return self._cf_clearance
+
+    @property
+    def user_agent(self) -> str:
+        """Currently configured User-Agent string."""
+        return self._user_agent
+
+    def _build_default_headers(self) -> dict[str, str]:
+        """Build the full default headers dict, including CF cookies."""
+        headers: dict[str, str] = {
+            "Content-Type":    "application/json",
+            "Accept":          "application/json, text/plain, */*",
+            "X-Auth-Token":    "Bearer " + self._api_key,
+            "Origin":          "https://app.1min.ai",
+            "Referer":         "https://app.1min.ai/",
+            "User-Agent":      self._user_agent,
+            "traceparent":     f"00-{_uuid.uuid4().hex}-{_uuid.uuid4().hex[:16]}-01",
+            "Accept-Encoding": "gzip, deflate, zstd",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        cookie_hdr = self._build_cookie_header()
+        if cookie_hdr:
+            headers["Cookie"] = cookie_hdr
+        return headers
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -187,22 +318,14 @@ class OneMinAIClient:
                     "api_key= to OneMinAIClient()."
                 )
             self._session = aiohttp.ClientSession(
-                headers={
-                    "Content-Type":   "application/json",
-                    "Accept":         "application/json, text/plain, */*",
-                    "X-Auth-Token":   "Bearer " + self._api_key,
-                    "Origin":         "https://app.1min.ai",
-                    "Referer":        "https://app.1min.ai/",
-                    "User-Agent":     (
-                        "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) "
-                        "Gecko/20100101 Firefox/150.0"
-                    ),
-                    "traceparent": f"00-{_uuid.uuid4().hex}-{_uuid.uuid4().hex[:16]}-01",
-                    "Accept-Encoding": "gzip, deflate, zstd",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
+                headers=self._build_default_headers(),
                 connector=aiohttp.TCPConnector(ssl=True),
             )
+            if self._cf_clearance:
+                logger.debug(
+                    "Session created with cf_clearance (prefix=%s…)",
+                    self._cf_clearance[:12],
+                )
         return self._session
 
     async def close(self) -> None:
@@ -323,10 +446,37 @@ class OneMinAIClient:
             timeout=aiohttp.ClientTimeout(total=3600),
             proxy=self._proxy,
         ) as resp:
-            await self._raise_for_status(resp)
-            buf = ""
+            # Raise for clear-cut 4xx/5xx
+            if resp.status >= 400:
+                await self._raise_for_status(resp)
+
+            buf             = ""
+            first_chunk     = True
+
             async for raw in resp.content:
-                buf += raw.decode("utf-8", errors="replace")
+                chunk_text = raw.decode("utf-8", errors="replace")
+
+                # ── first-chunk Cloudflare sniff (200 CF interstitial) ──
+                if first_chunk:
+                    first_chunk = False
+                    if _is_cloudflare_response(resp.status, resp.headers, chunk_text):
+                        challenge_type = _classify_cf_challenge(chunk_text)
+                        ray_id         = resp.headers.get("CF-RAY")
+                        logger.warning(
+                            "Cloudflare %s in SSE stream  ray=%s",
+                            challenge_type, ray_id,
+                        )
+                        raise CloudflareError(
+                            f"Cloudflare {challenge_type} intercepted the "
+                            f"streaming request.  "
+                            "Provide a valid cf_clearance cookie and matching "
+                            "User-Agent — see OneMinAIClient(cf_clearance=…).",
+                            status_code    = resp.status,
+                            challenge_type = challenge_type,
+                            ray_id         = ray_id,
+                        )
+
+                buf += chunk_text
                 while "\n\n" in buf:
                     block, buf = buf.split("\n\n", 1)
                     event_type: str | None = None
@@ -388,7 +538,8 @@ class OneMinAIClient:
             Non-2xx response or missing ``user.token`` in the response body.
         """
         device_id = str(_uuid.uuid4())
-        headers   = {
+        cookie_hdr   = self._build_cookie_header()
+        req_headers: dict[str, str] = {
             "Content-Type":  "application/json",
             "Accept":        "application/json, text/plain, */*",
             "X-Auth-Token":  "Bearer",
@@ -396,7 +547,10 @@ class OneMinAIClient:
             "MP-Identity":   f"$device:{device_id}",
             "Origin":        "https://app.1min.ai",
             "Referer":       "https://app.1min.ai/",
+            "User-Agent":    self._user_agent,
         }
+        if cookie_hdr:
+            req_headers["Cookie"] = cookie_hdr
         payload = {
             "oauthToken": oauth_token,
             "referral":   {"referrerId": referrer_id, "source": source},
@@ -406,13 +560,31 @@ class OneMinAIClient:
             async with tmp.post(
                 _OAUTH_URL,
                 data=json.dumps(payload).encode(),
-                headers=headers,
+                headers=req_headers,
                 timeout=self._timeout,
             ) as resp:
-                body = await resp.json(content_type=None)
+                raw_body = await _read_body_safe(resp)
+
+                # CF check before anything else
+                if _is_cloudflare_response(resp.status, resp.headers, raw_body):
+                    challenge_type = _classify_cf_challenge(raw_body)
+                    ray_id         = resp.headers.get("CF-RAY")
+                    raise CloudflareError(
+                        f"Cloudflare {challenge_type} blocked the OAuth request.  "
+                        "Provide cf_clearance= and user_agent= to OneMinAIClient().",
+                        status_code    = resp.status,
+                        challenge_type = challenge_type,
+                        ray_id         = ray_id,
+                    )
+
+                try:
+                    body = json.loads(raw_body)
+                except json.JSONDecodeError:
+                    body = {}
+
                 if not resp.ok:
                     raise OAuthError(
-                        f"OAuth failed ({resp.status}): {body.get('message', body)}"
+                        f"OAuth failed ({resp.status}): {body.get('message', raw_body[:200])}"
                     )
 
         user_obj = body.get("user")
@@ -946,6 +1118,27 @@ class OneMinAIClient:
     # ══════════════════════════════════════════════════════════════════════
     # FEATURE SETTINGS
     # ══════════════════════════════════════════════════════════════════════
+
+
+    async def rename_conversation(
+        self,
+        conversation_id: str,
+        title: str,
+        tag_ids: list[str] | None = None,
+    ) -> ConversationRecord:
+        """Rename a conversation and optionally update its tags."""
+        await self._get_team_id()
+        url     = self._team_url(_CONV_DETAIL_URL, conv_id=conversation_id)
+        payload: dict = {"title": title}
+        if tag_ids is not None:
+            payload["tagIds"] = tag_ids
+        data = await self._put(url, payload)
+        c    = data.get("conversation", data)
+        return ConversationRecord(
+            conversation_id = c.get("uuid", conversation_id),
+            title           = c.get("title", title),
+            metadata        = c,
+        )
 
     async def get_feature_settings(
         self, feature: str = "UNIFY_CHAT_WITH_AI"
@@ -1506,7 +1699,7 @@ class OneMinAIClient:
         width / height:
             Output dimensions in pixels.
         num_images:
-            Number of images (1–4).
+            Number of images (1-4).
         quality:
             ``"standard"``, ``"hd"``, or ``"ultra"``.
         style:
