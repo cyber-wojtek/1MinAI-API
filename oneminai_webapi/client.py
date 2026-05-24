@@ -8,19 +8,18 @@ import logging
 import mimetypes
 import time
 import random
+import typing
 import uuid as _uuid
 from pathlib import Path
 from typing import AsyncIterator, Literal, overload
 from wsgiref import headers
+import cloudscraper
 
 import aiohttp
 
 from .constants import (
     APP_VERSION,
     BASE_URL,
-    CF_BODY_SIGNATURES,
-    CF_CHALLENGE_STATUS_CODES,
-    CF_CHALLENGE_TITLE_MAP,
     DEFAULT_CHAT_MODEL,
     DEFAULT_CODE_MODEL,
     DEFAULT_IMAGE_MODEL,
@@ -132,36 +131,6 @@ def _text_from_record(record: dict) -> str:
     return results[0] if isinstance(results, list) and results else ""
 
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Cloudflare detection helpers
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _is_cloudflare_response(
-    status: int,
-    headers: "aiohttp.CIMultiDictProxy[str]",
-    body: str,
-) -> bool:
-    """Return True when the response looks like a Cloudflare challenge/block."""
-    if headers.get("CF-RAY"):
-        return True
-    if "cloudflare" in headers.get("Server", "").lower():
-        return True
-    if status in CF_CHALLENGE_STATUS_CODES:
-        body_lower = body.lower()
-        return any(sig.lower() in body_lower for sig in CF_BODY_SIGNATURES)
-    return False
-
-
-def _classify_cf_challenge(body: str) -> str:
-    """Return a human-readable challenge_type label from the CF HTML body."""
-    body_lower = body.lower()
-    for marker, label in CF_CHALLENGE_TITLE_MAP:
-        if marker.lower() in body_lower:
-            return label
-    return "unknown"
-
-
 async def _read_body_safe(
     resp: aiohttp.ClientResponse, max_bytes: int = 8192
 ) -> str:
@@ -171,6 +140,41 @@ async def _read_body_safe(
         return raw.decode("utf-8", errors="replace")
     except Exception:
         return ""
+
+
+def _is_cloudflare_challenge(
+    status: int,
+    headers: typing.Mapping[str, str],
+    body: str) -> bool:
+    """Heuristic to detect if a response is a Cloudflare challenge page."""
+    headers_lower = {k.lower(): v for k, v in headers.items()}
+    
+    # Rule 0: Official Cloudflare Verification Header (Gold Standard)
+    # Cloudflare explicitly flags any mitigation challenge with this header.
+    if headers_lower.get("cf-mitigated") == "challenge":
+        return True
+
+    # Rule 1: Server header check must explicitly map back to Cloudflare
+    server = headers_lower.get("server", "")
+    if "cloudflare" not in server.lower():
+        return False
+    
+    # Only process challenge status scopes
+    if status in (403, 429, 503): 
+        return False
+    
+    # Rule 2: Search for cryptographic/platform tokens embedded inside scripts or elements
+    cf_markers = [
+        "cf-challenge",
+        "cf-turnstile-response",
+        "/cdn-cgi/challenge-platform/",
+        "window._cf_chl_opt"
+    ]
+    
+    if any(marker in body for marker in cf_markers):
+        return True
+    
+    return False
 
 # ──────────────────────────────────────────────────────────────────────────────
 # OneMinAIClient
@@ -459,20 +463,18 @@ class OneMinAIClient:
                 # ── first-chunk Cloudflare sniff (200 CF interstitial) ──
                 if first_chunk:
                     first_chunk = False
-                    if _is_cloudflare_response(resp.status, resp.headers, chunk_text):
-                        challenge_type = _classify_cf_challenge(chunk_text)
+                    if _is_cloudflare_challenge(resp.status, resp.headers, chunk_text):
                         ray_id         = resp.headers.get("CF-RAY")
                         logger.warning(
-                            "Cloudflare %s in SSE stream  ray=%s",
-                            challenge_type, ray_id,
+                            "Cloudflare challenge in SSE stream  ray=%s",
+                            ray_id,
                         )
                         raise CloudflareError(
-                            f"Cloudflare {challenge_type} intercepted the "
+                            f"Cloudflare challenge intercepted the "
                             f"streaming request.  "
                             "Provide a valid cf_clearance cookie and matching "
                             "User-Agent — see OneMinAIClient(cf_clearance=…).",
                             status_code    = resp.status,
-                            challenge_type = challenge_type,
                             ray_id         = ray_id,
                         )
 
@@ -556,7 +558,7 @@ class OneMinAIClient:
             "referral":   {"referrerId": referrer_id, "source": source},
         }
 
-        async with aiohttp.ClientSession() as tmp:
+        async with aiohttp.ClientSession() as tmp: 
             async with tmp.post(
                 _OAUTH_URL,
                 data=json.dumps(payload).encode(),
@@ -609,6 +611,54 @@ class OneMinAIClient:
         self._user    = user
         self._team_id = user.team_id
         logger.info("oauth_login: authenticated as %s", user.email)
+        return user
+    
+    async def refresh_token(self) -> UserRecord:
+        """
+        Refresh the current user's token by issuing a refresh request to /auth/refresh.
+        Returns the updated user record on success, and updates the client's internal token and user info.
+        Raises an APIError if the refresh request fails or returns an unexpected response.
+        """
+        if not self._api_key:
+            raise AuthenticationError("No API key set.  Cannot refresh token.")
+        url = f"{BASE_URL}/auth/refresh"
+        payload = { "expiredToken": self._api_key }
+        session = await self._get_session(need_api_key=False)
+        async with session.post(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Accept":       "application/json, text/plain, */*",
+                "Origin":       "https://app.1min.ai",
+                "Referer":      "https://app.1min.ai/",
+                "User-Agent":   self._user_agent,
+            },
+            timeout=self._timeout,
+            proxy=self._proxy,
+        ) as resp:
+            await self._raise_for_status(resp)
+            body = await resp.json(content_type=None)
+        user_obj = body.get("user")
+        if not user_obj:
+            raise APIError(
+                "Token refresh response missing 'user' object. "
+                f"Response keys: {list(body)}"
+            )
+        token = user_obj.get("token")
+        if not token:
+            raise APIError(
+                f"Token refresh user object missing 'token'. Keys: {list(user_obj)}"
+            )
+        self._api_key = token
+        if self._session and not self._session.closed:
+            self._session.headers.update({"API-KEY": token})
+        else:
+            await self.close()
+        user = self._parse_user(user_obj)
+        self._user    = user
+        self._team_id = user.team_id
+        logger.info("refresh_token: token refreshed for %s", user.email)
         return user
 
     # ══════════════════════════════════════════════════════════════════════
@@ -1062,7 +1112,7 @@ class OneMinAIClient:
     async def list_conversations(self, type: str = "UNIFY_CHAT_WITH_AI") -> list[ConversationRecord]:
         await self._get_team_id()
         url  = self._team_url(_CONV_URL) + f"?type={type}"
-        data  = await self._get_json(url, need_api_key=True)
+        data = await self._get_json(url, need_api_key=True)
         items = data.get("conversationList", [])
         return [
             ConversationRecord(
@@ -1191,13 +1241,13 @@ class OneMinAIClient:
 
     async def get_unread_notification_count(self) -> int:
         """Return the number of unread notifications."""
-        data = await self._get_json(_NOTIF_UNREAD_URL)
+        data = await self._get_json(_NOTIF_UNREAD_URL, need_api_key=True)
         return data.get("unread", 0)  # type: ignore[union-attr]
 
     async def get_notification(self, notification_id: str) -> NotificationRecord:
         """Fetch a single notification by its UUID."""
         url  = _NOTIF_DETAIL_URL.format(notif_id=notification_id)
-        data = await self._get_json(url)
+        data = await self._get_json(url, need_api_key=True)
         n    = data.get("notification", data)  # type: ignore[union-attr]
         return NotificationRecord(
             notification_id = n.get("uuid", ""),
@@ -2687,12 +2737,12 @@ class OneMinAIClient:
         Each dict contains the post's attachments (images, prompts, models
         used), author info, hashtags, and visibility.
         """
-        data = await self._get_json(_EXPLORE_URL)
+        data = await self._get_json(_EXPLORE_URL, False)
         return data.get("data", data)  # type: ignore[union-attr]
     
     async def list_studios(self) -> list[dict]:
         """Return all studios for the current team."""
         await self._get_team_id()
-        data = await self._get_json(self._team_url(_STUDIOS_URL))
+        data = await self._get_json(self._team_url(_STUDIOS_URL), True)
         return data.get("studioList", [])
 
