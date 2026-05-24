@@ -13,7 +13,6 @@ import uuid as _uuid
 from pathlib import Path
 from typing import AsyncIterator, Literal, overload
 from wsgiref import headers
-import cloudscraper
 
 import aiohttp
 
